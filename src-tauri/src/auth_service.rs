@@ -1,18 +1,14 @@
 use oauth2::reqwest::async_http_client;
 use oauth2::{
-    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
+    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
 };
 use serde::Deserialize;
+use std::env;
 use std::sync::Arc;
-use std::{env, thread};
 use tauri::Window;
 use tauri_plugin_oauth::start;
 use url::Url;
-
-struct OAuthService {
-    client: Arc<BasicClient>,
-}
 
 struct OAuthState {
     csrf_token: CsrfToken,
@@ -25,66 +21,59 @@ struct CallbackQuery {
     state: CsrfToken,
 }
 
-impl OAuthService {
-    fn new(redirect_url: RedirectUrl) -> OAuthService {
-        OAuthService {
-            client: Arc::new(Self::create_client(redirect_url)),
-        }
+fn create_client(redirect_url: RedirectUrl) -> BasicClient {
+    let client_id = ClientId::new(env::var("OAUTH2_CLIENT_ID").expect("Missing OAUTH2_CLIENT_ID"));
+    let auth_url = AuthUrl::new(env::var("OAUTH2_AUTH_URL").expect("Missing OAUTH2_AUTH_URL"))
+        .expect("Invalid AUTH0_AUTH_URL");
+    let token_url = TokenUrl::new(env::var("OAUTH2_TOKEN_URL").expect("Missing OAUTH2_TOKEN_URL"))
+        .expect("Invalid AUTH0_TOKEN_URL");
+
+    BasicClient::new(client_id, None, auth_url, Some(token_url)).set_redirect_uri(redirect_url)
+}
+
+pub async fn authenticate(window: Window) -> anyhow::Result<()> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let port = start(move |url| {
+        let _ = tx.send(url);
+    })?;
+    let client = Arc::new(create_client(RedirectUrl::new(format!(
+        "http://localhost:{port}"
+    ))?));
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+    let auth_request = client
+        .authorize_url(CsrfToken::new_random)
+        .set_pkce_challenge(pkce_challenge.clone())
+        .add_scope(Scope::new("openid".to_string()))
+        .url();
+
+    open::that(format!("{:?}", auth_request))?;
+    let auth = OAuthState {
+        csrf_token: auth_request.1,
+        pkce: Arc::new((pkce_challenge, pkce_verifier)),
+    };
+
+    let url = rx
+        .recv()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No URL received"))?;
+    let parsed_url = Url::parse(&url)?;
+    let query = parsed_url
+        .query()
+        .ok_or_else(|| anyhow::anyhow!("Missing query string"))?;
+    let callback_query: CallbackQuery =
+        serde_urlencoded::from_str(query).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    if callback_query.state.secret() != auth.csrf_token.secret() {
+        println!("Suspected Man in the Middle attack!");
+        anyhow::bail!("CSRF token mismatch");
     }
 
-    fn create_client(redirect_url: RedirectUrl) -> BasicClient {
-        let client_id =
-            ClientId::new(env::var("OAUTH2_CLIENT_ID").expect("Missing OAUTH2_CLIENT_ID"));
-        let auth_url = AuthUrl::new(env::var("OAUTH2_AUTH_URL").expect("Missing OAUTH2_AUTH_URL"))
-            .expect("Invalid AUTH0_AUTH_URL");
-        let token_url =
-            TokenUrl::new(env::var("OAUTH2_TOKEN_URL").expect("Missing OAUTH2_TOKEN_URL"))
-                .expect("Invalid AUTH0_TOKEN_URL");
+    let cli = client
+        .exchange_code(callback_query.code)
+        .set_pkce_verifier(PkceCodeVerifier::new(auth.pkce.1.secret().clone()));
+    let token = cli.request_async(async_http_client).await?;
+    println!("Token: {:?}", token);
+    // TODO: store token here
 
-        BasicClient::new(client_id, None, auth_url, Some(token_url)).set_redirect_uri(redirect_url)
-    }
-
-    pub async fn authenticate(&self, window: Window) -> anyhow::Result<()> {
-        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-        let auth_request = self
-            .client
-            .authorize_url(CsrfToken::new_random)
-            .set_pkce_challenge(pkce_challenge.clone())
-            .add_scope(Scope::new("openid".to_string()))
-            .url();
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-        start(move |url| {
-            let _ = tx.send(url);
-        })?;
-        open::that(format!("{:?}", auth_request))?;
-        let auth = OAuthState {
-            csrf_token: auth_request.1,
-            pkce: Arc::new((pkce_challenge, pkce_verifier)),
-        };
-
-        let url = rx.recv().await.ok_or_else(|| anyhow::anyhow!("No URL received"))?; 
-        let parsed_url = Url::parse(&url)?;
-        let query = parsed_url
-            .query()
-            .ok_or_else(|| anyhow::anyhow!("Missing query string"))?;
-        let callback_query: CallbackQuery =
-            serde_urlencoded::from_str(query).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-        if callback_query.state.secret() != auth.csrf_token.secret() {
-            println!("Suspected Man in the Middle attack!");
-            anyhow::bail!("CSRF token mismatch");
-        }
-
-        let cli = self
-            .client
-            .exchange_code(callback_query.code)
-            .set_pkce_verifier(PkceCodeVerifier::new(auth.pkce.1.secret().clone()));
-        let token = cli.request_async(async_http_client).await?;
-        println!("Token: {:?}", token);
-        // TODO: store token here
-
-        Ok(())
-    }
+    Ok(())
 }

@@ -3,13 +3,13 @@ use tauri::{command, Emitter, Window};
 use tauri_plugin_oauth::start;
 
 #[command]
-async fn start_server(window: Window) -> Result<u16, String> {
-    start(move |url| {
-        // Because of the unprotected localhost port, you must verify the URL here.
-        // Preferebly send back only the token, or nothing at all if you can handle everything else in Rust.
-        let _ = window.emit("redirect_uri", url);
-    })
-    .map_err(|err| err.to_string())
+async fn authenticate(window: Window) -> Result<(), String> {
+    let redirect_url = "http://localhost:1420/callback".to_string();
+    let oauth_service = auth_service::OAuthService::new(redirect_url.into());
+    oauth_service
+        .authenticate(window)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
