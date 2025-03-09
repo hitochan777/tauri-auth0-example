@@ -22,11 +22,11 @@ struct CallbackQuery {
 }
 
 fn create_client(redirect_url: RedirectUrl) -> BasicClient {
-    let client_id = ClientId::new(env::var("OAUTH2_CLIENT_ID").expect("Missing OAUTH2_CLIENT_ID"));
-    let auth_url = AuthUrl::new(env::var("OAUTH2_AUTH_URL").expect("Missing OAUTH2_AUTH_URL"))
-        .expect("Invalid AUTH0_AUTH_URL");
-    let token_url = TokenUrl::new(env::var("OAUTH2_TOKEN_URL").expect("Missing OAUTH2_TOKEN_URL"))
-        .expect("Invalid AUTH0_TOKEN_URL");
+    let client_id = ClientId::new(env::var("CLIENT_ID").expect("Missing CLIENT_ID"));
+    let auth_url =
+        AuthUrl::new(env::var("AUTH_URL").expect("Missing AUTH_URL")).expect("Invalid AUTH_URL");
+    let token_url = TokenUrl::new(env::var("TOKEN_URL").expect("Missing TOKEN_URL"))
+        .expect("Invalid TOKEN_URL");
 
     BasicClient::new(client_id, None, auth_url, Some(token_url)).set_redirect_uri(redirect_url)
 }
