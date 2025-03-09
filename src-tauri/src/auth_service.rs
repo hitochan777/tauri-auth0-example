@@ -3,11 +3,11 @@ use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
 };
+use oauth2::{AccessToken, TokenResponse};
 use serde::Deserialize;
 use std::env;
 use std::sync::Arc;
-use tauri::Window;
-use tauri_plugin_oauth::start;
+use tauri_plugin_oauth::start_with_config;
 use url::Url;
 
 struct OAuthState {
@@ -31,11 +31,17 @@ fn create_client(redirect_url: RedirectUrl) -> BasicClient {
     BasicClient::new(client_id, None, auth_url, Some(token_url)).set_redirect_uri(redirect_url)
 }
 
-pub async fn authenticate(window: Window) -> anyhow::Result<()> {
+pub async fn authenticate() -> anyhow::Result<AccessToken> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let port = start(move |url| {
-        let _ = tx.send(url);
-    })?;
+    let port = start_with_config(
+        tauri_plugin_oauth::OauthConfig {
+            ports: Some((45000..=45010).collect()),
+            response: None,
+        },
+        move |url| {
+            let _ = tx.send(url);
+        },
+    )?;
     let client = Arc::new(create_client(RedirectUrl::new(format!(
         "http://localhost:{port}"
     ))?));
@@ -46,7 +52,8 @@ pub async fn authenticate(window: Window) -> anyhow::Result<()> {
         .add_scope(Scope::new("openid".to_string()))
         .url();
 
-    open::that(format!("{:?}", auth_request))?;
+    println!("Opening browser for authentication...{}", auth_request.0);
+    open::that(auth_request.0.to_string())?;
     let auth = OAuthState {
         csrf_token: auth_request.1,
         pkce: Arc::new((pkce_challenge, pkce_verifier)),
@@ -71,9 +78,10 @@ pub async fn authenticate(window: Window) -> anyhow::Result<()> {
     let cli = client
         .exchange_code(callback_query.code)
         .set_pkce_verifier(PkceCodeVerifier::new(auth.pkce.1.secret().clone()));
-    let token = cli.request_async(async_http_client).await?;
-    println!("Token: {:?}", token);
-    // TODO: store token here
-
-    Ok(())
+    let token = cli
+        .request_async(async_http_client)
+        .await?
+        .access_token()
+        .clone();
+    Ok(token)
 }
