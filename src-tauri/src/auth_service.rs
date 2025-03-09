@@ -1,9 +1,8 @@
-use oauth2::reqwest::async_http_client;
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
 };
-use oauth2::{AccessToken, TokenResponse};
+use oauth2::{reqwest, AccessToken, TokenResponse};
 use serde::Deserialize;
 use std::env;
 use std::sync::Arc;
@@ -21,16 +20,6 @@ struct CallbackQuery {
     state: CsrfToken,
 }
 
-fn create_client(redirect_url: RedirectUrl) -> BasicClient {
-    let client_id = ClientId::new(env::var("CLIENT_ID").expect("Missing CLIENT_ID"));
-    let auth_url =
-        AuthUrl::new(env::var("AUTH_URL").expect("Missing AUTH_URL")).expect("Invalid AUTH_URL");
-    let token_url = TokenUrl::new(env::var("TOKEN_URL").expect("Missing TOKEN_URL"))
-        .expect("Invalid TOKEN_URL");
-
-    BasicClient::new(client_id, None, auth_url, Some(token_url)).set_redirect_uri(redirect_url)
-}
-
 pub async fn authenticate() -> anyhow::Result<AccessToken> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let port = start_with_config(
@@ -42,9 +31,18 @@ pub async fn authenticate() -> anyhow::Result<AccessToken> {
             let _ = tx.send(url);
         },
     )?;
-    let client = Arc::new(create_client(RedirectUrl::new(format!(
-        "http://localhost:{port}"
-    ))?));
+
+    let client_id = ClientId::new(env::var("CLIENT_ID").expect("Missing CLIENT_ID"));
+    let auth_url =
+        AuthUrl::new(env::var("AUTH_URL").expect("Missing AUTH_URL")).expect("Invalid AUTH_URL");
+    let token_url = TokenUrl::new(env::var("TOKEN_URL").expect("Missing TOKEN_URL"))
+        .expect("Invalid TOKEN_URL");
+
+    let client = BasicClient::new(client_id)
+        .set_auth_uri(auth_url)
+        .set_token_uri(token_url)
+        .set_redirect_uri(RedirectUrl::new(format!("http://localhost:{port}"))?);
+
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let auth_request = client
         .authorize_url(CsrfToken::new_random)
@@ -75,11 +73,16 @@ pub async fn authenticate() -> anyhow::Result<AccessToken> {
         anyhow::bail!("CSRF token mismatch");
     }
 
+    let http_client = reqwest::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Client should build");
+
     let cli = client
         .exchange_code(callback_query.code)
         .set_pkce_verifier(PkceCodeVerifier::new(auth.pkce.1.secret().clone()));
     let token = cli
-        .request_async(async_http_client)
+        .request_async(&http_client)
         .await?
         .access_token()
         .clone();
