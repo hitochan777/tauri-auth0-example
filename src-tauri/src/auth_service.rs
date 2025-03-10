@@ -32,16 +32,25 @@ pub async fn authenticate() -> anyhow::Result<AccessToken> {
         },
     )?;
 
-    let client_id = ClientId::new(env::var("CLIENT_ID").expect("Missing CLIENT_ID"));
-    let auth_url =
-        AuthUrl::new(env::var("AUTH_URL").expect("Missing AUTH_URL")).expect("Invalid AUTH_URL");
-    let token_url = TokenUrl::new(env::var("TOKEN_URL").expect("Missing TOKEN_URL"))
-        .expect("Invalid TOKEN_URL");
+    fn create_oauth_client(port: u16) -> Result<BasicClient, anyhow::Error> {
+        let client_id =
+            ClientId::new(env::var("CLIENT_ID").map_err(|_| anyhow::anyhow!("Missing CLIENT_ID"))?);
+        let auth_url =
+            AuthUrl::new(env::var("AUTH_URL").map_err(|_| anyhow::anyhow!("Missing AUTH_URL"))?)
+                .map_err(|_| anyhow::anyhow!("Invalid AUTH_URL"))?;
+        let token_url =
+            TokenUrl::new(env::var("TOKEN_URL").map_err(|_| anyhow::anyhow!("Missing TOKEN_URL"))?)
+                .map_err(|_| anyhow::anyhow!("Invalid TOKEN_URL"))?;
 
-    let client = BasicClient::new(client_id)
-        .set_auth_uri(auth_url)
-        .set_token_uri(token_url)
-        .set_redirect_uri(RedirectUrl::new(format!("http://localhost:{port}"))?);
+        let client = BasicClient::new(client_id)
+            .set_auth_uri(auth_url)
+            .set_token_uri(token_url)
+            .set_redirect_uri(RedirectUrl::new(format!("http://localhost:{port}"))?);
+
+        Ok(client)
+    }
+
+    let client = create_oauth_client(port)?;
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let auth_request = client
